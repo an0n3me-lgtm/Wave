@@ -268,6 +268,25 @@ io.on('connection', (socket) => {
     socket.join(conversation_id);
   });
 
+
+  // ── P2P / WebRTC signalling ───────────────────────────────────────────────
+
+  socket.on('p2p:announce', (info) => {
+    // Broadcast to everyone else on same server (same LAN session)
+    socket.broadcast.emit('p2p:announce', info);
+    socket.join('p2p:room');
+  });
+
+  socket.on('p2p:signal', ({ to, from, signal }) => {
+    // Forward WebRTC signal to target peer
+    const targetSockets = onlineUsers.get(to);
+    if (targetSockets) {
+      for (const sid of targetSockets) {
+        io.to(sid).emit('p2p:signal', { from, signal });
+      }
+    }
+  });
+
   socket.on('disconnect', () => {
     const sockets = onlineUsers.get(userId);
     if (sockets) {
@@ -287,3 +306,4 @@ app.get('/api/users/online', authMiddleware, (req, res) => {
 server.listen(PORT, () => {
   console.log(`Wave server running on port ${PORT}`);
 });
+// Appended by patch — P2P signalling

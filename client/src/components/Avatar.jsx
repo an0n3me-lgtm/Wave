@@ -22,10 +22,11 @@ export default function Avatar({ user, size = 36, showStatus = false, isOnline =
           alignItems: 'center',
           justifyContent: 'center',
           fontSize: size * 0.38,
-          fontWeight: 600,
+          fontWeight: 700,
           color: '#fff',
           letterSpacing: '-0.02em',
           userSelect: 'none',
+          boxShadow: `0 2px 10px ${color}66`,
         }}
       >
         {initials}
@@ -36,11 +37,12 @@ export default function Avatar({ user, size = 36, showStatus = false, isOnline =
             position: 'absolute',
             bottom: 0,
             right: 0,
-            width: size * 0.3,
-            height: size * 0.3,
+            width: size * 0.28,
+            height: size * 0.28,
             borderRadius: '50%',
-            background: isOnline ? 'var(--success)' : 'var(--text-tertiary)',
-            border: '2px solid var(--bg-secondary)',
+            background: isOnline ? 'var(--success)' : 'rgba(255,255,255,0.2)',
+            border: `${Math.max(2, size * 0.05)}px solid rgba(10,8,20,0.9)`,
+            boxShadow: isOnline ? '0 0 6px var(--success)' : 'none',
           }}
         />
       )}

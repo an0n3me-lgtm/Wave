@@ -1,0 +1,97 @@
+{
+  "name": "wave-messenger",
+  "version": "1.0.0",
+  "description": "Wave — Real-time messenger with offline P2P",
+  "main": "main.js",
+  "author": "Wave Team",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "npm run build:client && electron-builder --linux",
+    "build:win": "npm run build:client && electron-builder --win",
+    "build:client": "npm run build --prefix ../client",
+    "pack": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.wave.messenger",
+    "productName": "Wave",
+    "copyright": "© 2024 Wave",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "server-bundle/**/*",
+      "!node_modules/.cache"
+    ],
+    "extraResources": [
+      {
+        "from": "../client/dist",
+        "to": "client",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../server",
+        "to": "server",
+        "filter": [
+          "**/*",
+          "!node_modules"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "category": "Network"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.social-networking"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "runAfterFinish": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^36.3.1",
+    "electron-builder": "^26.0.12",
+    "electron-packager": "^17.1.2"
+  },
+  "dependencies": {
+    "electron-serve": "^2.1.1"
+  }
+}

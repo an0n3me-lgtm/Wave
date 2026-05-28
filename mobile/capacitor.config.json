@@ -1,0 +1,30 @@
+{
+  "appId": "com.wave.messenger",
+  "appName": "Wave",
+  "webDir": "../client/dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "buildOptions": {
+      "releaseType": "APK"
+    }
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "backgroundColor": "#0a0a12",
+      "androidSplashResourceName": "splash",
+      "showSpinner": false
+    },
+    "BluetoothLe": {
+      "displayStrings": {
+        "scanning": "Scanning for Wave devices...",
+        "cancel": "Cancel",
+        "availableDevices": "Nearby Wave Users",
+        "noDeviceFound": "No Wave devices found"
+      }
+    }
+  }
+}

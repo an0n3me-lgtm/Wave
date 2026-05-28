@@ -3,6 +3,10 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    // Make platform detection available
+    '__IS_ELECTRON__': JSON.stringify(false),
+  },
   server: {
     port: 5173,
     proxy: {
@@ -15,6 +19,11 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+    },
+  },
+  build: {
+    rollupOptions: {
+      external: ['@capacitor/core'],
     },
   },
 });
