@@ -188,7 +188,7 @@ const s = {
     display: 'flex', flexDirection: 'column',
     borderRight: '1px solid var(--glass-border)',
     height: '100%', overflow: 'hidden',
-    background: 'rgba(15,10,30,0.65)',
+    background: 'rgba(18,14,32,0.97)',
   },
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',

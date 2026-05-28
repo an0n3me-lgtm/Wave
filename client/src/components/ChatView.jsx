@@ -296,7 +296,7 @@ const s = {
     padding: '12px 20px',
     borderBottom: '1px solid var(--glass-border)',
     flexShrink: 0,
-    background: 'rgba(10,8,20,0.7)',
+    background: 'rgba(16,12,28,0.97)',
   },
   backBtn: { display: 'flex', alignItems: 'center', color: 'var(--text-secondary)', padding: 4 },
   headerInfo: { display: 'flex', flexDirection: 'column', gap: 2 },
@@ -341,7 +341,7 @@ const s = {
     boxShadow: '0 4px 16px rgba(99,102,241,0.3)',
   },
   bubbleTheirs: {
-    background: 'rgba(255,255,255,0.08)',
+    background: 'rgba(255,255,255,0.10)',
     backdropFilter: 'blur(12px)',
     border: '1px solid rgba(255,255,255,0.10)',
     color: 'var(--text-primary)', borderBottomLeftRadius: 4,
@@ -384,7 +384,7 @@ const s = {
     padding: '8px 8px 8px 16px',
     borderRadius: 'var(--radius-xl)',
     border: '1px solid var(--glass-border)',
-    background: 'rgba(10,8,20,0.6)',
+    background: 'rgba(16,12,28,0.95)',
   },
   input: {
     flex: 1, background: 'none', border: 'none',

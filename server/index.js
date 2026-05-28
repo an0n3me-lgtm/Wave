@@ -41,6 +41,11 @@ function authMiddleware(req, res, next) {
 
 // ─── Auth routes ──────────────────────────────────────────────────────────────
 
+
+app.get('/api/auth/ping', (req, res) => {
+  res.json({ ok: true, version: '1.0.0' });
+});
+
 app.post('/api/auth/register', (req, res) => {
   const { username, display_name, password } = req.body;
   if (!username || !display_name || !password) {
