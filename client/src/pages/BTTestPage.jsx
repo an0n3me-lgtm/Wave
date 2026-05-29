@@ -2,6 +2,7 @@
 // Dynamic import creates a separate chunk that Android WebView can't resolve.
 import { BleClient } from '@capacitor-community/bluetooth-le';
 import React, { useState, useEffect, useRef } from 'react';
+import { lookupOUI } from '../lib/oui';
 
 const WAVE_SERVICE  = '0000fee0-0000-1000-8000-00805f9b34fb';
 const WAVE_CHAR_MSG = '0000fee1-0000-1000-8000-00805f9b34fb';
@@ -77,13 +78,15 @@ function Inner() {
     lg('requestLEScan…');
     try {
       await BleClient.requestLEScan({ allowDuplicates: false }, (r) => {
-        const name = r.device?.name || r.localName || r.device?.deviceId || 'Unknown';
-        lg('Found: ' + name + (r.rssi ? ' ' + r.rssi + 'dBm' : ''));
+        const id = r.device?.deviceId;
+        if (!id) return;
+        const name = r.device?.name || r.localName || '';
+        const { brand, icon } = lookupOUI(id);
+        const label = name || brand;
+        lg('Found: ' + icon + ' ' + label + ' [' + id + ']' + (r.rssi ? ' ' + r.rssi + 'dBm' : ''));
         setDevices(prev => {
-          const id = r.device?.deviceId;
-          if (!id) return prev;
           const ex = prev.find(d => d.id === id);
-          const upd = { id, name, rssi: r.rssi };
+          const upd = { id, name, brand, icon, rssi: r.rssi };
           return ex ? prev.map(d => d.id === id ? upd : d) : [...prev, upd];
         });
       });
@@ -112,7 +115,8 @@ function Inner() {
     clearTimeout(scanRef.current);
     try { await BleClient.stopLEScan(); } catch {}
     setPhase('connecting');
-    lg('Connecting to ' + dev.name + '…');
+    const devLabel = dev.name || dev.brand || dev.id;
+    lg('Connecting to ' + (dev.icon || '📱') + ' ' + devLabel + ' [' + dev.brand + ']…');
     try {
       await BleClient.connect(dev.id, () => {
         lg('Disconnected from ' + dev.name);
@@ -269,18 +273,37 @@ function Inner() {
         {devices.length > 0 && (
           <>
             <p style={S.secLabel}>Nearby devices ({devices.length})</p>
-            {devices.map(d => (
+            {devices.map(d => {
+            const displayName = d.name || d.brand || 'Unknown';
+            const isWave = d.name?.toLowerCase().includes('wave');
+            return (
               <div key={d.id} style={S.devRow}>
-                <span style={{ fontSize: 22 }}>
-                  {d.name.toLowerCase().includes('wave') ? '🌊' : '📱'}
+                <span style={{ fontSize: 26, lineHeight: 1 }}>
+                  {isWave ? '🌊' : d.icon || '📱'}
                 </span>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={S.devName}>{d.name}</p>
-                  <p style={S.devSub}>{d.id.slice(0, 17)}{d.rssi ? '  ' + d.rssi + ' dBm' : ''}</p>
+                  {/* Brand / model name */}
+                  <p style={S.devName}>
+                    {displayName}
+                    {d.brand && d.brand !== 'Unknown' && d.name
+                      ? <span style={{ fontSize: 11, fontWeight: 500, color: '#a5b4fc', marginLeft: 6 }}>({d.brand})</span>
+                      : null}
+                  </p>
+                  {/* MAC address split into readable pieces */}
+                  <p style={S.devSub}>
+                    <span style={{ color: '#fbbf24' }}>{d.id.slice(0, 8).toUpperCase()}</span>
+                    <span style={{ opacity: 0.5 }}>{d.id.slice(8).toUpperCase()}</span>
+                    {d.rssi
+                      ? <span style={{ marginLeft: 8, color: signalColor(d.rssi) }}>
+                          {signalIcon(d.rssi)} {d.rssi} dBm
+                        </span>
+                      : null}
+                  </p>
                 </div>
                 <button style={S.connBtn} onClick={() => doConnect(d)}>Connect</button>
               </div>
-            ))}
+            );
+          })}
           </>
         )}
 
@@ -334,6 +357,17 @@ function LogPanel({ log }) {
       </div>
     </div>
   );
+}
+
+function signalColor(rssi) {
+  if (rssi >= -60) return '#34d399'; // strong
+  if (rssi >= -75) return '#fbbf24'; // medium
+  return '#f87171'; // weak
+}
+function signalIcon(rssi) {
+  if (rssi >= -60) return '▊▊▊';
+  if (rssi >= -75) return '▊▊░';
+  return '▊░░';
 }
 
 function stLabel(p) {
