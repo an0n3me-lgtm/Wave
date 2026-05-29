@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - JWT_SECRET=change-me-in-production
+      - CLIENT_URL=http://localhost:5173
+    volumes:
+      - wave-data:/app/data
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://localhost:3001
+    ports:
+      - "5173:80"
+    depends_on:
+      - server
+
+volumes:
+  wave-data:
