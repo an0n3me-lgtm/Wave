@@ -1,209 +1,244 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { BleClient, numberToUUID } from '@capacitor-community/bluetooth-le';
 
-// Wave BLE identifiers
+// Wave BLE UUIDs
 const WAVE_SERVICE  = '0000fee0-0000-1000-8000-00805f9b34fb';
 const WAVE_CHAR_MSG = '0000fee1-0000-1000-8000-00805f9b34fb';
-const WAVE_CHAR_ADV = '0000fee2-0000-1000-8000-00805f9b34fb';
+
+// ── Lazy BleClient loader ────────────────────────────────────────────────────
+let _ble = null;
+async function getBle() {
+  if (_ble) return _ble;
+  try {
+    const mod = await import('@capacitor-community/bluetooth-le');
+    _ble = mod.BleClient;
+    return _ble;
+  } catch (e) {
+    throw new Error('BLE module load failed: ' + e.message);
+  }
+}
 
 function encode(str) {
   return new DataView(new TextEncoder().encode(str).buffer);
 }
-function decode(dataView) {
-  const bytes = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength);
-  return new TextDecoder().decode(bytes);
+function decode(dv) {
+  try {
+    const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+    return new TextDecoder().decode(bytes);
+  } catch { return ''; }
 }
 
-export default function BTTestPage() {
+// ── Error Boundary ───────────────────────────────────────────────────────────
+class ErrorBoundary extends React.Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(e) { return { err: e }; }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{ padding: 24, color: '#fca5a5', background: '#0b0a14', minHeight: '100vh' }}>
+          <h2 style={{ fontSize: 18, marginBottom: 12 }}>⚠ Startup Error</h2>
+          <pre style={{ fontSize: 12, whiteSpace: 'pre-wrap', opacity: 0.8 }}>
+            {this.state.err.toString()}
+          </pre>
+          <button onClick={() => window.location.reload()}
+            style={{ marginTop: 16, padding: '10px 20px', background: '#6366f1',
+              border: 'none', borderRadius: 10, color: '#fff', fontSize: 14, cursor: 'pointer' }}>
+            Reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
+function BTTestInner() {
   const [myName, setMyName] = useState(localStorage.getItem('bt_name') || '');
-  const [nameEdit, setNameEdit] = useState(!localStorage.getItem('bt_name'));
-  const [status, setStatus] = useState('idle'); // idle|init|scanning|connected|error
-  const [error, setError] = useState('');
-  const [devices, setDevices] = useState([]); // [{deviceId, name, rssi}]
-  const [connected, setConnected] = useState(null); // {deviceId, name}
+  const [editingName, setEditingName] = useState(!localStorage.getItem('bt_name'));
+  const [bleStatus, setBleStatus] = useState('idle'); // idle|ready|error|scanning|connecting|connected
+  const [bleError, setBleError] = useState('');
+  const [devices, setDevices] = useState([]);
+  const [connected, setConnected] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
-  const [log, setLog] = useState([]);
+  const [log, setLog] = useState(['App started.']);
+  const scanTimer = useRef(null);
   const bottomRef = useRef(null);
-  const scanTimeout = useRef(null);
 
-  const addLog = (msg) => setLog(l => [...l.slice(-40), `${new Date().toLocaleTimeString()} ${msg}`]);
+  const addLog = (msg) =>
+    setLog(prev => [...prev.slice(-60), new Date().toLocaleTimeString('ru') + '  ' + msg]);
 
-  // Auto-scroll messages
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    bottomRef.current?.scrollIntoView({ behaviour: 'smooth' });
   }, [messages]);
 
-  // Init BLE on mount
-  useEffect(() => {
-    initBle();
-    return () => {
-      clearTimeout(scanTimeout.current);
-      try { BleClient.stopLEScan(); } catch {}
-    };
-  }, []);
-
+  // ── Init BLE ──
   async function initBle() {
+    setBleStatus('idle');
+    setBleError('');
+    addLog('Loading BLE module…');
     try {
-      setStatus('init');
-      addLog('Initialising Bluetooth…');
+      const BleClient = await getBle();
+      addLog('Module loaded. Initialising…');
       await BleClient.initialize({ androidNeverForLocation: false });
-      addLog('✓ BLE ready');
-      setStatus('idle');
+      addLog('✓ Bluetooth ready');
+      setBleStatus('ready');
     } catch (e) {
-      setError(e.message || String(e));
-      setStatus('error');
-      addLog('✗ BLE init failed: ' + (e.message || e));
+      const msg = e.message || String(e);
+      addLog('✗ Init error: ' + msg);
+      setBleError(msg);
+      setBleStatus('error');
     }
   }
 
+  // ── Scan ──
   async function startScan() {
+    setBleError('');
     setDevices([]);
-    setStatus('scanning');
-    addLog('Scanning for BLE devices…');
+    setBleStatus('scanning');
+    addLog('Starting scan…');
     try {
-      await BleClient.requestLEScan(
-        { allowDuplicates: false },
-        (result) => {
-          const name = result.device.name || result.localName || result.device.deviceId;
-          addLog(`Found: ${name} (RSSI ${result.rssi ?? '?'} dBm)`);
-          setDevices(prev => {
-            const exists = prev.find(d => d.deviceId === result.device.deviceId);
-            if (exists) {
-              return prev.map(d => d.deviceId === result.device.deviceId
-                ? { ...d, rssi: result.rssi, name }
-                : d);
-            }
-            return [...prev, { deviceId: result.device.deviceId, name, rssi: result.rssi }];
-          });
-        }
-      );
-      // Auto-stop after 15 s
-      scanTimeout.current = setTimeout(() => {
-        BleClient.stopLEScan().catch(() => {});
-        setStatus('idle');
-        addLog('Scan finished.');
+      const BleClient = await getBle();
+      await BleClient.requestLEScan({ allowDuplicates: false }, (result) => {
+        const name = result.device?.name || result.localName || result.device?.deviceId || 'Unknown';
+        const rssi = result.rssi ?? null;
+        addLog('Found: ' + name + (rssi ? ' (' + rssi + ' dBm)' : ''));
+        setDevices(prev => {
+          const id = result.device?.deviceId;
+          if (!id) return prev;
+          const exists = prev.find(d => d.deviceId === id);
+          const updated = { deviceId: id, name, rssi };
+          return exists ? prev.map(d => d.deviceId === id ? updated : d) : [...prev, updated];
+        });
+      });
+      scanTimer.current = setTimeout(async () => {
+        try { await BleClient.stopLEScan(); } catch {}
+        setBleStatus('ready');
+        addLog('Scan finished (15 s).');
       }, 15000);
     } catch (e) {
-      setStatus('error');
-      setError(e.message || String(e));
-      addLog('✗ Scan error: ' + (e.message || e));
+      const msg = e.message || String(e);
+      addLog('✗ Scan error: ' + msg);
+      setBleError(msg);
+      setBleStatus('ready');
     }
   }
 
   async function stopScan() {
-    clearTimeout(scanTimeout.current);
-    try { await BleClient.stopLEScan(); } catch {}
-    setStatus('idle');
+    clearTimeout(scanTimer.current);
+    try { const BleClient = await getBle(); await BleClient.stopLEScan(); } catch {}
+    setBleStatus('ready');
     addLog('Scan stopped.');
   }
 
+  // ── Connect ──
   async function connectDevice(device) {
-    addLog(`Connecting to ${device.name}…`);
-    setStatus('connecting');
+    clearTimeout(scanTimer.current);
+    try { const BleClient = await getBle(); await BleClient.stopLEScan(); } catch {}
+    setBleStatus('connecting');
+    addLog('Connecting to ' + device.name + '…');
     try {
+      const BleClient = await getBle();
       await BleClient.connect(device.deviceId, () => {
-        addLog(`Disconnected from ${device.name}`);
+        addLog('Disconnected from ' + device.name);
         setConnected(null);
-        setStatus('idle');
+        setBleStatus('ready');
       });
+      addLog('✓ Connected. Checking services…');
 
-      addLog('✓ Connected. Looking for Wave service…');
-
-      // Try to get Wave service
+      // Try Wave service subscription
       try {
         const services = await BleClient.getServices(device.deviceId);
-        const hasWave = services.some(s => s.uuid.toLowerCase().includes('fee0'));
-        addLog(hasWave ? '✓ Wave service found!' : '⚠ Wave service not found (generic device)');
-
-        if (hasWave) {
-          // Subscribe to incoming messages
-          await BleClient.startNotifications(device.deviceId, WAVE_SERVICE, WAVE_CHAR_MSG, (dv) => {
-            try {
-              const raw = decode(dv);
-              const msg = JSON.parse(raw);
-              addLog(`← ${msg.from}: ${msg.content}`);
-              setMessages(m => [...m, { ...msg, mine: false }]);
-            } catch {
-              addLog(`← raw: ${decode(dv)}`);
+        const waveService = services.find(s =>
+          s.uuid && s.uuid.toLowerCase().includes('fee0'));
+        if (waveService) {
+          addLog('✓ Wave BLE service found!');
+          await BleClient.startNotifications(
+            device.deviceId, WAVE_SERVICE, WAVE_CHAR_MSG,
+            (dv) => {
+              try {
+                const raw = decode(dv);
+                const msg = JSON.parse(raw);
+                addLog('← ' + msg.from + ': ' + msg.content);
+                setMessages(m => [...m, { ...msg, mine: false }]);
+              } catch {
+                addLog('← raw data received');
+              }
             }
-          });
+          );
+          addLog('✓ Subscribed to messages');
+        } else {
+          addLog('⚠ No Wave service. Generic BLE device (can still test connect).');
         }
       } catch (e) {
-        addLog('Note: could not enumerate services: ' + e.message);
+        addLog('Note: service listing: ' + e.message);
       }
 
       setConnected(device);
-      setStatus('connected');
-      addLog('✓ Ready to chat');
+      setBleStatus('connected');
+      addLog('Ready.');
     } catch (e) {
-      setStatus('idle');
-      addLog('✗ Connect failed: ' + (e.message || e));
+      const msg = e.message || String(e);
+      addLog('✗ Connect failed: ' + msg);
+      setBleError(msg);
+      setBleStatus('ready');
     }
   }
 
   async function disconnect() {
     if (!connected) return;
     try {
+      const BleClient = await getBle();
       await BleClient.disconnect(connected.deviceId);
     } catch {}
     setConnected(null);
-    setStatus('idle');
+    setBleStatus('ready');
     addLog('Disconnected.');
   }
 
-  async function sendMessage() {
+  async function sendMsg() {
     if (!text.trim() || !connected) return;
     const payload = { from: myName || 'Me', content: text.trim(), ts: Date.now() };
-    const msg = { ...payload, mine: true };
     try {
+      const BleClient = await getBle();
       await BleClient.write(connected.deviceId, WAVE_SERVICE, WAVE_CHAR_MSG, encode(JSON.stringify(payload)));
-      addLog(`→ ${payload.content}`);
-      setMessages(m => [...m, msg]);
-      setText('');
+      addLog('→ ' + payload.content);
+      setMessages(m => [...m, { ...payload, mine: true }]);
     } catch (e) {
-      addLog('✗ Send failed: ' + (e.message || e));
-      // Still show it locally
-      setMessages(m => [...m, { ...msg, failed: true }]);
-      setText('');
+      addLog('✗ Send: ' + e.message + ' (saved locally)');
+      setMessages(m => [...m, { ...payload, mine: true, failed: true }]);
     }
+    setText('');
   }
 
-  const saveName = () => {
-    localStorage.setItem('bt_name', myName.trim() || 'Unknown');
-    setNameEdit(false);
-  };
-
-  // ── Render ────────────────────────────────────────────────────────────────
-
-  if (nameEdit || !myName) {
+  // ── Name screen ──────────────────────────────────────────────────────────
+  if (editingName) {
     return (
-      <div style={p.root}>
-        <div style={p.card}>
-          <div style={p.logoRow}>
-            <div style={p.logoIcon}>
-              <svg width="26" height="26" viewBox="0 0 32 32" fill="none">
-                <path d="M4 20 Q9 10 14 20 Q19 30 24 20 Q29 10 29 16"
-                  stroke="white" strokeWidth="3" strokeLinecap="round" fill="none"/>
-              </svg>
-            </div>
-            <span style={p.logoText}>Wave</span>
-          </div>
-          <p style={p.heading}>Your Name</p>
-          <p style={p.sub}>This name will be shown to nearby devices over Bluetooth.</p>
+      <div style={s.center}>
+        <div style={s.card}>
+          <Logo />
+          <p style={s.h2}>Your Name</p>
+          <p style={s.muted}>This name is sent to nearby devices over Bluetooth.</p>
           <input
-            style={p.input}
+            style={s.input}
             placeholder="Enter your name…"
             value={myName}
-            onChange={e => setMyName(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && myName.trim() && saveName()}
             autoFocus
+            onChange={e => setMyName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && myName.trim()) {
+                localStorage.setItem('bt_name', myName.trim());
+                setEditingName(false);
+              }
+            }}
           />
           <button
-            style={{ ...p.btn, opacity: myName.trim() ? 1 : 0.5 }}
+            style={{ ...s.btnPrimary, opacity: myName.trim() ? 1 : 0.45 }}
             disabled={!myName.trim()}
-            onClick={saveName}
-          >
+            onClick={() => {
+              localStorage.setItem('bt_name', myName.trim());
+              setEditingName(false);
+            }}>
             Continue →
           </button>
         </div>
@@ -211,404 +246,384 @@ export default function BTTestPage() {
     );
   }
 
-  return (
-    <div style={p.root}>
-      {/* Header */}
-      <div style={p.header}>
-        <div style={p.logoRow2}>
-          <div style={p.logoIconSm}>
-            <svg width="16" height="16" viewBox="0 0 32 32" fill="none">
-              <path d="M4 20 Q9 10 14 20 Q19 30 24 20 Q29 10 29 16"
-                stroke="white" strokeWidth="2.5" strokeLinecap="round" fill="none"/>
-            </svg>
+  // ── Chat screen ──────────────────────────────────────────────────────────
+  if (bleStatus === 'connected' && connected) {
+    return (
+      <div style={s.page}>
+        <div style={s.header}>
+          <Logo small />
+          <span style={s.btBadge}>🔵 BT</span>
+          <button style={s.backBtn} onClick={disconnect}>✕ Disconnect</button>
+        </div>
+
+        <div style={s.chatHeader}>
+          <span style={s.chatIcon}>📱</span>
+          <div>
+            <p style={s.chatName}>{connected.name}</p>
+            <p style={s.onlineLabel}>● Connected via Bluetooth</p>
           </div>
-          <span style={p.logoTextSm}>Wave</span>
-          <span style={p.btBadge}>🔵 BT Test</span>
         </div>
-        <div style={p.myName}>
-          <span style={p.myNameLabel}>You:</span>
-          <button style={p.myNameBtn} onClick={() => setNameEdit(true)}>{myName} ✏</button>
-        </div>
-      </div>
 
-      {/* Status bar */}
-      <div style={{ ...p.statusBar, background: statusColor(status) }}>
-        <span style={p.statusDot} />
-        <span style={p.statusText}>{statusLabel(status, connected)}</span>
-        {connected && (
-          <button style={p.discBtn} onClick={disconnect}>Disconnect</button>
-        )}
-      </div>
-
-      {error ? (
-        <div style={p.errorBox}>
-          <p style={p.errorTitle}>⚠ Bluetooth Error</p>
-          <p style={p.errorMsg}>{error}</p>
-          <p style={p.errorHint}>
-            Make sure Bluetooth is ON and you granted all permissions.
-            On Android 12+ grant NEARBY DEVICES permission in Settings → Apps → Wave → Permissions.
-          </p>
-          <button style={p.retryBtn} onClick={() => { setError(''); initBle(); }}>Retry</button>
-        </div>
-      ) : connected ? (
-        /* ── Chat view ── */
-        <div style={p.chatRoot}>
-          <div style={p.chatHeader}>
-            <div style={p.btIcon}>🔵</div>
-            <div>
-              <p style={p.chatName}>{connected.name}</p>
-              <p style={p.chatSub}>Connected via Bluetooth</p>
-            </div>
-          </div>
-
-          <div style={p.messages}>
-            {messages.length === 0 && (
-              <p style={p.noMsgs}>Connected! Send a message to test →</p>
-            )}
-            {messages.map((m, i) => (
-              <div key={i} style={{ ...p.msgRow, justifyContent: m.mine ? 'flex-end' : 'flex-start' }}>
-                <div style={{ ...p.bubble, ...(m.mine ? p.bubbleMine : p.bubbleTheirs), opacity: m.failed ? 0.6 : 1 }}>
-                  {!m.mine && <p style={p.msgFrom}>{m.from}</p>}
-                  <p style={p.msgText}>{m.content}</p>
-                  <p style={p.msgTime}>{new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                  {m.failed && <p style={{ fontSize: 10, color: '#fca5a5' }}>⚠ not sent</p>}
-                </div>
+        <div style={s.messages}>
+          {messages.length === 0 && (
+            <p style={s.noMsg}>Connected! Send a test message 👇</p>
+          )}
+          {messages.map((m, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: m.mine ? 'flex-end' : 'flex-start', marginBottom: 6 }}>
+              <div style={{ ...s.bubble, ...(m.mine ? s.bubbleMine : s.bubbleTheirs) }}>
+                {!m.mine && <p style={s.bubbleFrom}>{m.from}</p>}
+                <p style={s.bubbleText}>{m.content}</p>
+                <p style={s.bubbleTime}>{new Date(m.ts).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}{m.failed ? ' ⚠' : ''}</p>
               </div>
-            ))}
-            <div ref={bottomRef} />
-          </div>
-
-          <div style={p.inputRow}>
-            <input
-              style={p.chatInput}
-              placeholder="Type a message…"
-              value={text}
-              onChange={e => setText(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && sendMessage()}
-            />
-            <button style={{ ...p.sendBtn, opacity: text.trim() ? 1 : 0.4 }}
-              disabled={!text.trim()} onClick={sendMessage}>▶</button>
-          </div>
+            </div>
+          ))}
+          <div ref={bottomRef} />
         </div>
-      ) : (
-        /* ── Scan / devices view ── */
-        <div style={p.body}>
-          {/* Scan controls */}
-          <div style={p.section}>
-            {status === 'scanning' ? (
-              <button style={p.stopBtn} onClick={stopScan}>⏹ Stop Scan</button>
-            ) : (
-              <button style={p.scanBtn} disabled={status === 'init' || status === 'connecting'}
-                onClick={startScan}>
-                🔍 Scan for Devices
-              </button>
-            )}
-            <p style={p.scanNote}>
-              Scans for ALL nearby Bluetooth devices.{'\n'}
-              Both devices must have Bluetooth ON.
-            </p>
-          </div>
 
-          {/* Device list */}
-          {devices.length > 0 && (
-            <div style={p.section}>
-              <p style={p.sectionTitle}>Nearby Devices ({devices.length})</p>
-              {devices.map(d => (
-                <div key={d.deviceId} style={p.deviceRow}>
-                  <div style={p.deviceIcon}>
-                    {d.name.toLowerCase().includes('wave') ? '🌊' : '📱'}
-                  </div>
-                  <div style={p.deviceInfo}>
-                    <p style={p.deviceName}>{d.name}</p>
-                    <p style={p.deviceSub}>{d.rssi ? `${d.rssi} dBm` : 'RSSI unknown'}</p>
-                  </div>
-                  <button style={p.connectBtn}
-                    onClick={() => { stopScan(); connectDevice(d); }}>
-                    Connect
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+        <div style={s.inputRow}>
+          <input
+            style={s.chatInput}
+            placeholder="Message…"
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && sendMsg()}
+          />
+          <button
+            style={{ ...s.sendBtn, opacity: text.trim() ? 1 : 0.35 }}
+            disabled={!text.trim()}
+            onClick={sendMsg}>▶
+          </button>
+        </div>
 
-          {status === 'scanning' && devices.length === 0 && (
-            <div style={p.scanning}>
-              <div style={p.pulseRing} />
-              <p style={p.scanningText}>Scanning…</p>
-              <p style={p.scanningHint}>Make sure the other device has Bluetooth ON</p>
-            </div>
-          )}
+        <LogBox log={log} />
+      </div>
+    );
+  }
 
-          {status === 'idle' && devices.length === 0 && (
-            <div style={p.emptyState}>
-              <p style={p.emptyIcon}>🔵</p>
-              <p style={p.emptyTitle}>Ready to Scan</p>
-              <p style={p.emptyText}>Press "Scan for Devices" to find nearby Bluetooth devices</p>
-            </div>
-          )}
+  // ── Main scan screen ─────────────────────────────────────────────────────
+  return (
+    <div style={s.page}>
+      {/* Header */}
+      <div style={s.header}>
+        <Logo small />
+        <span style={s.btBadge}>🔵 Bluetooth Test</span>
+        <button style={s.nameBtn} onClick={() => setEditingName(true)}>{myName} ✏</button>
+      </div>
+
+      {/* BLE status */}
+      <div style={{ ...s.statusBar, background: statusBg(bleStatus) }}>
+        <span style={{ ...s.statusDot, background: statusDotColor(bleStatus) }} />
+        <span style={s.statusText}>{statusText(bleStatus)}</span>
+      </div>
+
+      {/* Error */}
+      {bleError && (
+        <div style={s.errorBox}>
+          <p style={s.errorTitle}>⚠ BLE Error</p>
+          <p style={s.errorMsg}>{bleError}</p>
+          <p style={s.errorHint}>Check that Bluetooth is ON and the app has "Nearby devices" permission (Android 12+).</p>
         </div>
       )}
 
-      {/* Debug log */}
-      <div style={p.logBox}>
-        <p style={p.logTitle}>Log</p>
-        <div style={p.logScroll}>
-          {log.map((l, i) => <p key={i} style={p.logLine}>{l}</p>)}
-        </div>
+      {/* Controls */}
+      <div style={s.body}>
+        {bleStatus === 'idle' || bleStatus === 'error' ? (
+          <button style={s.btnPrimary} onClick={initBle}>
+            🔵 Initialise Bluetooth
+          </button>
+        ) : bleStatus === 'scanning' ? (
+          <button style={s.btnStop} onClick={stopScan}>⏹ Stop Scan</button>
+        ) : (
+          <button style={s.btnPrimary} disabled={bleStatus === 'connecting'} onClick={startScan}>
+            {bleStatus === 'connecting' ? 'Connecting…' : '🔍 Scan for Devices'}
+          </button>
+        )}
+
+        {bleStatus === 'scanning' && devices.length === 0 && (
+          <div style={s.pulse}>
+            <div style={s.pulseCircle} />
+            <p style={s.pulseText}>Scanning…</p>
+            <p style={s.muted}>Turn Bluetooth ON on the other device</p>
+          </div>
+        )}
+
+        {devices.length > 0 && (
+          <>
+            <p style={s.sectionLabel}>Found {devices.length} device(s)</p>
+            {devices.map(d => (
+              <div key={d.deviceId} style={s.deviceRow}>
+                <span style={s.deviceIcon}>
+                  {d.name.toLowerCase().includes('wave') ? '🌊' : '📱'}
+                </span>
+                <div style={s.deviceInfo}>
+                  <p style={s.deviceName}>{d.name}</p>
+                  <p style={s.deviceSub}>{d.deviceId.slice(0, 17)}{d.rssi ? '  •  ' + d.rssi + ' dBm' : ''}</p>
+                </div>
+                <button style={s.connectBtn} onClick={() => connectDevice(d)}>
+                  Connect
+                </button>
+              </div>
+            ))}
+          </>
+        )}
+
+        {bleStatus === 'ready' && devices.length === 0 && (
+          <div style={s.emptyState}>
+            <p style={{ fontSize: 40 }}>🔵</p>
+            <p style={s.emptyTitle}>Bluetooth Ready</p>
+            <p style={s.muted}>Press "Scan for Devices" to find nearby phones</p>
+          </div>
+        )}
+      </div>
+
+      <LogBox log={log} />
+    </div>
+  );
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function Logo({ small }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: small ? 6 : 10 }}>
+      <div style={{
+        width: small ? 28 : 46, height: small ? 28 : 46,
+        borderRadius: small ? 8 : 13,
+        background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: '0 3px 12px rgba(99,102,241,0.45)', flexShrink: 0,
+      }}>
+        <svg width={small ? 16 : 26} height={small ? 16 : 26} viewBox="0 0 32 32" fill="none">
+          <path d="M4 20 Q9 10 14 20 Q19 30 24 20 Q29 10 29 16"
+            stroke="white" strokeWidth="3" strokeLinecap="round" fill="none"/>
+        </svg>
+      </div>
+      <span style={{
+        fontSize: small ? 17 : 28, fontWeight: 800, letterSpacing: '-0.02em',
+        background: 'linear-gradient(135deg, #818cf8, #c084fc)',
+        WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+      }}>Wave</span>
+    </div>
+  );
+}
+
+function LogBox({ log }) {
+  const ref = useRef(null);
+  useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight; }, [log]);
+  return (
+    <div style={s.logBox}>
+      <p style={s.logLabel}>LOG</p>
+      <div ref={ref} style={s.logScroll}>
+        {log.map((l, i) => <p key={i} style={s.logLine}>{l}</p>)}
       </div>
     </div>
   );
 }
 
-function statusColor(s) {
-  if (s === 'connected') return 'rgba(52,211,153,0.18)';
-  if (s === 'scanning' || s === 'connecting') return 'rgba(251,191,36,0.15)';
-  if (s === 'error') return 'rgba(248,113,113,0.15)';
-  return 'rgba(255,255,255,0.05)';
+function statusText(st) {
+  switch (st) {
+    case 'idle': return 'Bluetooth not initialised';
+    case 'ready': return 'Bluetooth ready';
+    case 'scanning': return 'Scanning for devices…';
+    case 'connecting': return 'Connecting…';
+    case 'connected': return 'Connected';
+    case 'error': return 'Bluetooth error';
+    default: return st;
+  }
+}
+function statusBg(st) {
+  if (st === 'connected') return 'rgba(52,211,153,0.14)';
+  if (st === 'scanning' || st === 'connecting') return 'rgba(251,191,36,0.12)';
+  if (st === 'error') return 'rgba(248,113,113,0.12)';
+  if (st === 'ready') return 'rgba(129,140,248,0.10)';
+  return 'rgba(255,255,255,0.04)';
+}
+function statusDotColor(st) {
+  if (st === 'connected') return '#34d399';
+  if (st === 'scanning' || st === 'connecting') return '#fbbf24';
+  if (st === 'error') return '#f87171';
+  if (st === 'ready') return '#818cf8';
+  return '#6b7280';
 }
 
-function statusLabel(s, connected) {
-  if (s === 'connected' && connected) return `Connected to ${connected.name}`;
-  if (s === 'scanning') return 'Scanning for devices…';
-  if (s === 'connecting') return 'Connecting…';
-  if (s === 'init') return 'Initialising Bluetooth…';
-  if (s === 'error') return 'Bluetooth error';
-  return 'Ready';
-}
-
-const p = {
-  root: {
+// ── Styles ────────────────────────────────────────────────────────────────────
+const s = {
+  page: {
     display: 'flex', flexDirection: 'column', height: '100vh',
-    background: '#0b0a14', color: '#fff', overflow: 'hidden',
+    background: '#0b0a14', color: '#fff',
     fontFamily: "'Inter', -apple-system, sans-serif",
+    overflow: 'hidden',
   },
-
-  // Name entry
+  center: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    minHeight: '100vh', background: '#0b0a14', padding: 20,
+  },
   card: {
-    background: 'rgba(22,18,38,0.98)', border: '1px solid rgba(255,255,255,0.16)',
-    borderRadius: 20, padding: '36px 24px', margin: 'auto 20px',
-    maxWidth: 380, width: '100%', alignSelf: 'center',
+    width: '100%', maxWidth: 400, padding: '34px 24px 26px',
+    background: 'rgba(22,18,38,0.98)',
+    border: '1px solid rgba(255,255,255,0.15)', borderRadius: 22,
     boxShadow: '0 20px 60px rgba(0,0,0,0.7)',
+    display: 'flex', flexDirection: 'column', gap: 14,
   },
-  logoRow: {
-    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 20,
-  },
-  logoIcon: {
-    width: 46, height: 46, borderRadius: 13,
-    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    boxShadow: '0 4px 18px rgba(99,102,241,0.5)',
-  },
-  logoText: {
-    fontSize: 30, fontWeight: 800, letterSpacing: '-0.03em',
-    background: 'linear-gradient(135deg, #818cf8, #c084fc)',
-    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-    backgroundClip: 'text',
-  },
-  heading: { fontSize: 18, fontWeight: 700, marginBottom: 8, textAlign: 'center' },
-  sub: {
-    fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.6,
-    textAlign: 'center', marginBottom: 20,
-  },
+  h2: { fontSize: 18, fontWeight: 700, textAlign: 'center' },
+  muted: { fontSize: 12, color: 'rgba(255,255,255,0.42)', textAlign: 'center', lineHeight: 1.6 },
   input: {
-    width: '100%', padding: '13px 14px',
-    background: 'rgba(255,255,255,0.09)',
-    border: '1px solid rgba(255,255,255,0.18)',
-    borderRadius: 12, color: '#fff', fontSize: 16,
-    marginBottom: 14,
+    padding: '13px 14px',
+    background: 'rgba(255,255,255,0.09)', border: '1px solid rgba(255,255,255,0.17)',
+    borderRadius: 12, color: '#fff', fontSize: 16, width: '100%',
   },
-  btn: {
-    width: '100%', padding: '14px',
-    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-    border: 'none', borderRadius: 12, color: '#fff',
-    fontWeight: 700, fontSize: 16, cursor: 'pointer',
-    boxShadow: '0 4px 18px rgba(99,102,241,0.45)',
-  },
-
-  // Header
-  header: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '12px 16px 10px',
-    background: 'rgba(22,18,38,0.97)',
-    borderBottom: '1px solid rgba(255,255,255,0.10)',
-    flexShrink: 0,
-  },
-  logoRow2: { display: 'flex', alignItems: 'center', gap: 8 },
-  logoIconSm: {
-    width: 30, height: 30, borderRadius: 8,
-    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-  },
-  logoTextSm: {
-    fontSize: 18, fontWeight: 800, letterSpacing: '-0.02em',
-    background: 'linear-gradient(135deg, #818cf8, #c084fc)',
-    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-    backgroundClip: 'text',
-  },
-  btBadge: {
-    fontSize: 11, fontWeight: 700, padding: '2px 8px',
-    background: 'rgba(99,102,241,0.2)', border: '1px solid rgba(129,140,248,0.4)',
-    borderRadius: 99, color: '#a5b4fc',
-  },
-  myName: { display: 'flex', alignItems: 'center', gap: 5 },
-  myNameLabel: { fontSize: 12, color: 'rgba(255,255,255,0.4)' },
-  myNameBtn: {
-    fontSize: 13, fontWeight: 600, color: '#a5b4fc',
-    background: 'rgba(129,140,248,0.1)', border: '1px solid rgba(129,140,248,0.25)',
-    borderRadius: 8, padding: '3px 9px', cursor: 'pointer',
-  },
-
-  // Status
-  statusBar: {
-    display: 'flex', alignItems: 'center', gap: 8,
-    padding: '9px 16px', flexShrink: 0, transition: '300ms ease',
-    borderBottom: '1px solid rgba(255,255,255,0.08)',
-  },
-  statusDot: {
-    width: 7, height: 7, borderRadius: '50%',
-    background: 'currentColor', flexShrink: 0,
-  },
-  statusText: { flex: 1, fontSize: 13, fontWeight: 500, color: 'rgba(255,255,255,0.8)' },
-  discBtn: {
-    fontSize: 11, fontWeight: 700, color: '#fca5a5',
-    background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)',
-    borderRadius: 7, padding: '3px 10px', cursor: 'pointer',
-  },
-
-  // Error
-  errorBox: {
-    margin: 16, padding: 18,
-    background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
-    borderRadius: 14,
-  },
-  errorTitle: { fontSize: 15, fontWeight: 700, color: '#fca5a5', marginBottom: 6 },
-  errorMsg: { fontSize: 13, color: '#fca5a5', marginBottom: 8, lineHeight: 1.5 },
-  errorHint: { fontSize: 12, color: 'rgba(255,255,255,0.5)', lineHeight: 1.6, marginBottom: 12 },
-  retryBtn: {
-    padding: '9px 18px',
-    background: 'rgba(248,113,113,0.2)', border: '1px solid rgba(248,113,113,0.4)',
-    borderRadius: 9, color: '#fca5a5', fontWeight: 700, fontSize: 13, cursor: 'pointer',
-  },
-
-  // Body / scan
-  body: { flex: 1, overflowY: 'auto', padding: '12px 14px' },
-  section: { marginBottom: 18 },
-  sectionTitle: {
-    fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
-    letterSpacing: '0.07em', color: 'rgba(255,255,255,0.45)', marginBottom: 10,
-  },
-  scanBtn: {
+  btnPrimary: {
     width: '100%', padding: '15px',
     background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
     border: 'none', borderRadius: 14, color: '#fff',
-    fontWeight: 700, fontSize: 16, cursor: 'pointer',
-    boxShadow: '0 4px 20px rgba(99,102,241,0.45)', marginBottom: 8,
+    fontWeight: 700, fontSize: 15, cursor: 'pointer',
+    boxShadow: '0 4px 18px rgba(99,102,241,0.4)',
   },
-  stopBtn: {
+  btnStop: {
     width: '100%', padding: '15px',
-    background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.4)',
-    borderRadius: 14, color: '#fca5a5', fontWeight: 700, fontSize: 16, cursor: 'pointer',
-    marginBottom: 8,
+    background: 'rgba(248,113,113,0.14)', border: '1px solid rgba(248,113,113,0.38)',
+    borderRadius: 14, color: '#fca5a5', fontWeight: 700, fontSize: 15, cursor: 'pointer',
   },
-  scanNote: {
-    fontSize: 12, color: 'rgba(255,255,255,0.4)', textAlign: 'center', lineHeight: 1.6,
-    whiteSpace: 'pre-line',
+
+  header: {
+    display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px 10px',
+    background: 'rgba(22,18,38,0.98)', borderBottom: '1px solid rgba(255,255,255,0.09)',
+    flexShrink: 0,
+  },
+  btBadge: {
+    fontSize: 11, fontWeight: 700, padding: '2px 8px',
+    background: 'rgba(99,102,241,0.18)', border: '1px solid rgba(129,140,248,0.38)',
+    borderRadius: 99, color: '#a5b4fc', flexShrink: 0,
+  },
+  nameBtn: {
+    marginLeft: 'auto', fontSize: 12, color: '#a5b4fc',
+    background: 'rgba(129,140,248,0.10)', border: '1px solid rgba(129,140,248,0.25)',
+    borderRadius: 8, padding: '3px 10px', cursor: 'pointer', whiteSpace: 'nowrap',
+  },
+  backBtn: {
+    marginLeft: 'auto', fontSize: 12, color: '#fca5a5',
+    background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.28)',
+    borderRadius: 8, padding: '4px 10px', cursor: 'pointer',
+  },
+
+  statusBar: {
+    display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px',
+    flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.07)',
+  },
+  statusDot: { width: 8, height: 8, borderRadius: '50%', flexShrink: 0 },
+  statusText: { fontSize: 13, fontWeight: 500, color: 'rgba(255,255,255,0.78)' },
+
+  errorBox: {
+    margin: '10px 14px', padding: '14px 16px',
+    background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.3)',
+    borderRadius: 14,
+  },
+  errorTitle: { fontSize: 14, fontWeight: 700, color: '#fca5a5', marginBottom: 5 },
+  errorMsg: { fontSize: 12, color: '#fca5a5', lineHeight: 1.5, marginBottom: 6 },
+  errorHint: { fontSize: 11, color: 'rgba(255,255,255,0.45)', lineHeight: 1.6 },
+
+  body: {
+    flex: 1, overflowY: 'auto', padding: '14px 14px 10px',
+    display: 'flex', flexDirection: 'column', gap: 10,
+  },
+  sectionLabel: {
+    fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+    letterSpacing: '0.07em', color: 'rgba(255,255,255,0.42)',
   },
   deviceRow: {
     display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px',
     background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)',
-    borderRadius: 14, marginBottom: 8,
+    borderRadius: 14,
   },
-  deviceIcon: { fontSize: 24, flexShrink: 0 },
+  deviceIcon: { fontSize: 22, flexShrink: 0 },
   deviceInfo: { flex: 1, minWidth: 0 },
   deviceName: {
     fontSize: 14, fontWeight: 600, color: '#fff',
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
-  deviceSub: { fontSize: 12, color: 'rgba(255,255,255,0.45)', marginTop: 2 },
+  deviceSub: { fontSize: 11, color: 'rgba(255,255,255,0.42)', marginTop: 2, fontFamily: 'monospace' },
   connectBtn: {
-    padding: '8px 16px', borderRadius: 10, flexShrink: 0,
-    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
-    color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', border: 'none',
+    flexShrink: 0, padding: '8px 14px',
+    background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', border: 'none',
+    borderRadius: 10, color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer',
   },
-
-  // Scanning animation
-  scanning: {
-    display: 'flex', flexDirection: 'column', alignItems: 'center',
-    padding: '40px 20px', gap: 12,
+  pulse: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '30px 0',
   },
-  pulseRing: {
-    width: 60, height: 60, borderRadius: '50%',
-    border: '3px solid #818cf8',
-    animation: 'ping 1.5s cubic-bezier(0,0,0.2,1) infinite',
-    opacity: 0.7,
+  pulseCircle: {
+    width: 56, height: 56, borderRadius: '50%',
+    border: '3px solid #818cf8', opacity: 0.7,
+    animation: 'pulse-bt 1.4s ease-out infinite',
   },
-  scanningText: { fontSize: 16, fontWeight: 600, color: '#a5b4fc' },
-  scanningHint: { fontSize: 13, color: 'rgba(255,255,255,0.4)', textAlign: 'center' },
-
-  // Empty
+  pulseText: { fontSize: 15, fontWeight: 600, color: '#a5b4fc' },
   emptyState: {
-    display: 'flex', flexDirection: 'column', alignItems: 'center',
-    padding: '50px 20px', gap: 10,
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, paddingTop: 40,
   },
-  emptyIcon: { fontSize: 40 },
-  emptyTitle: { fontSize: 16, fontWeight: 600, color: 'rgba(255,255,255,0.7)' },
-  emptyText: { fontSize: 13, color: 'rgba(255,255,255,0.4)', textAlign: 'center', lineHeight: 1.6 },
+  emptyTitle: { fontSize: 15, fontWeight: 600, color: 'rgba(255,255,255,0.65)' },
 
-  // Chat
-  chatRoot: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   chatHeader: {
-    display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px',
-    background: 'rgba(22,18,38,0.95)', borderBottom: '1px solid rgba(255,255,255,0.10)',
+    display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
+    background: 'rgba(22,18,38,0.95)', borderBottom: '1px solid rgba(255,255,255,0.09)',
     flexShrink: 0,
   },
-  btIcon: { fontSize: 28, flexShrink: 0 },
-  chatName: { fontSize: 15, fontWeight: 700 },
-  chatSub: { fontSize: 12, color: '#34d399', marginTop: 2 },
-  messages: { flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 6 },
-  noMsgs: { textAlign: 'center', color: 'rgba(255,255,255,0.35)', fontSize: 13, padding: '30px 0' },
-  msgRow: { display: 'flex' },
-  bubble: { maxWidth: '78%', padding: '10px 13px', borderRadius: 18 },
+  chatIcon: { fontSize: 26, flexShrink: 0 },
+  chatName: { fontSize: 15, fontWeight: 700, color: '#fff' },
+  onlineLabel: { fontSize: 12, color: '#34d399', marginTop: 2 },
+  messages: {
+    flex: 1, overflowY: 'auto', padding: '10px 14px',
+    display: 'flex', flexDirection: 'column',
+  },
+  noMsg: { textAlign: 'center', color: 'rgba(255,255,255,0.35)', fontSize: 13, paddingTop: 30 },
+  bubble: { maxWidth: '78%', padding: '9px 13px', borderRadius: 18, wordBreak: 'break-word' },
   bubbleMine: {
-    background: 'linear-gradient(135deg,#6366f1,#8b5cf6)',
-    borderBottomRightRadius: 4,
-    boxShadow: '0 3px 12px rgba(99,102,241,0.35)',
+    background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', borderBottomRightRadius: 4,
+    boxShadow: '0 2px 10px rgba(99,102,241,0.35)',
   },
   bubbleTheirs: {
-    background: 'rgba(255,255,255,0.10)',
-    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'rgba(255,255,255,0.10)', border: '1px solid rgba(255,255,255,0.11)',
     borderBottomLeftRadius: 4,
   },
-  msgFrom: { fontSize: 10, fontWeight: 700, color: '#a5b4fc', marginBottom: 3 },
-  msgText: { fontSize: 14, lineHeight: 1.45, color: '#fff' },
-  msgTime: { fontSize: 10, opacity: 0.5, textAlign: 'right', marginTop: 4 },
-
+  bubbleFrom: { fontSize: 10, fontWeight: 700, color: '#a5b4fc', marginBottom: 3 },
+  bubbleText: { fontSize: 14, lineHeight: 1.45, color: '#fff' },
+  bubbleTime: { fontSize: 10, opacity: 0.45, textAlign: 'right', marginTop: 3 },
   inputRow: {
-    display: 'flex', gap: 10, padding: '10px 14px 16px',
-    background: 'rgba(22,18,38,0.97)', borderTop: '1px solid rgba(255,255,255,0.10)',
+    display: 'flex', gap: 8, padding: '10px 14px 14px',
+    background: 'rgba(22,18,38,0.97)', borderTop: '1px solid rgba(255,255,255,0.09)',
     flexShrink: 0,
   },
   chatInput: {
     flex: 1, padding: '12px 14px',
-    background: 'rgba(255,255,255,0.09)',
-    border: '1px solid rgba(255,255,255,0.14)',
+    background: 'rgba(255,255,255,0.09)', border: '1px solid rgba(255,255,255,0.14)',
     borderRadius: 12, color: '#fff', fontSize: 15,
   },
   sendBtn: {
-    width: 46, height: 46, borderRadius: 12, flexShrink: 0,
-    background: 'linear-gradient(135deg,#6366f1,#8b5cf6)',
-    color: '#fff', fontWeight: 700, fontSize: 18,
-    border: 'none', cursor: 'pointer',
+    width: 46, height: 46, flexShrink: 0,
+    background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', border: 'none',
+    borderRadius: 12, color: '#fff', fontWeight: 800, fontSize: 18, cursor: 'pointer',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
 
-  // Log
   logBox: {
-    maxHeight: 120, flexShrink: 0,
-    background: 'rgba(0,0,0,0.5)', borderTop: '1px solid rgba(255,255,255,0.08)',
-    padding: '6px 12px',
+    flexShrink: 0, maxHeight: 110,
+    background: 'rgba(0,0,0,0.55)', borderTop: '1px solid rgba(255,255,255,0.07)',
+    padding: '6px 12px 8px',
   },
-  logTitle: { fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.3)', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.06em' },
-  logScroll: { overflowY: 'auto', maxHeight: 90 },
-  logLine: { fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 1.6, fontFamily: 'monospace' },
+  logLabel: {
+    fontSize: 9, fontWeight: 800, letterSpacing: '0.1em',
+    color: 'rgba(255,255,255,0.28)', textTransform: 'uppercase', marginBottom: 3,
+  },
+  logScroll: { overflowY: 'auto', maxHeight: 88 },
+  logLine: {
+    fontSize: 11, color: 'rgba(255,255,255,0.55)',
+    lineHeight: 1.55, fontFamily: 'monospace', whiteSpace: 'pre-wrap',
+  },
 };
+
+// ── Export wrapped in boundary ─────────────────────────────────────────────
+export default function BTTestPage() {
+  return (
+    <ErrorBoundary>
+      <BTTestInner />
+    </ErrorBoundary>
+  );
+}
